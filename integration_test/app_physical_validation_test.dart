@@ -84,7 +84,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Select Bezier Curve Preset chip
-      final bezierFinder = find.text('Bezier');
+      final bezierFinder = find.text('Bézier').evaluate().isNotEmpty ? find.text('Bézier') : find.text('Bezier');
       if (bezierFinder.evaluate().isNotEmpty) {
         await tester.tap(bezierFinder);
         await tester.pumpAndSettle();
