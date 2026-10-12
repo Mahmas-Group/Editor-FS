@@ -33,6 +33,8 @@ class MotionGraphCoordinates {
   final KeyframeTrack track;
   final double durationSec;
   final AnimatableProperty property;
+  final double viewStartSec;
+  final double viewEndSec;
 
   late final double minVal;
   late final double maxVal;
@@ -42,7 +44,9 @@ class MotionGraphCoordinates {
     required this.track,
     required this.durationSec,
     required this.property,
-  }) {
+    this.viewStartSec = 0.0,
+    double? viewEndSec,
+  }) : viewEndSec = viewEndSec ?? durationSec {
     double tMin = property.minValue;
     double tMax = property.maxValue;
 
@@ -81,12 +85,15 @@ class MotionGraphCoordinates {
 
   double timeToX(double tSec) {
     if (durationSec <= 0 || size.width <= 0) return 0;
-    return ((tSec / durationSec).clamp(0.0, 1.0)) * size.width;
+    final viewDuration = math.max(1e-4, viewEndSec - viewStartSec);
+    final norm = (tSec - viewStartSec) / viewDuration;
+    return norm * size.width;
   }
 
   double xToTime(double x) {
-    if (size.width <= 0) return 0;
-    return (x / size.width).clamp(0.0, 1.0) * durationSec;
+    if (size.width <= 0) return viewStartSec;
+    final viewDuration = math.max(1e-4, viewEndSec - viewStartSec);
+    return (viewStartSec + (x / size.width) * viewDuration).clamp(0.0, durationSec);
   }
 
   Offset keyframeOffset(MotionKeyframe kf) {
@@ -142,6 +149,11 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
   AnimatableProperty _selectedProperty = AnimatableProperty.scale;
   MotionGraphDisplayMode _displayMode = MotionGraphDisplayMode.valueCurve;
   bool _syncTransformTracks = true;
+
+  // Viewport Zoom & Pan State
+  double _viewStartSec = 0.0;
+  double _viewEndSec = 0.0;
+  bool _hasCustomView = false;
 
   // Active touch interaction state
   _ActiveDragType _dragType = _ActiveDragType.none;
@@ -291,7 +303,7 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // 1. Drag Handle & Header (with Value vs Speed Toggle)
-              _buildHeader(context),
+              _buildHeader(context, track),
 
               // 2. Property Selector Tabs
               _buildPropertySelector(trackGroup),
@@ -313,30 +325,86 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
                             track: track,
                             durationSec: layerDuration,
                             property: _selectedProperty,
+                            viewStartSec: _hasCustomView ? _viewStartSec : 0.0,
+                            viewEndSec: _hasCustomView ? _viewEndSec : layerDuration,
                           );
 
-                          return GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onPanStart: (details) => _handlePanStart(details, coords, track, selectedKf, nextKf),
-                            onPanUpdate: (details) => _handlePanUpdate(details, coords, track, layerDuration),
-                            onPanEnd: (_) => _handlePanEnd(),
-                            onPanCancel: () => _handlePanEnd(),
-                            onTapDown: (details) => _handleTapDown(details, coords, track, layerDuration),
-                            child: CustomPaint(
-                              painter: _MotionGraphPainter(
-                                track: track,
-                                durationSec: layerDuration,
-                                playheadSec: relPlayheadSec,
-                                selectedKeyframe: selectedKf,
-                                nextKeyframe: nextKf,
-                                property: _selectedProperty,
-                                displayMode: _displayMode,
-                                coords: coords,
-                                dragTooltipText: _dragTooltipText,
-                                dragTooltipPos: _dragTooltipPos,
+                          return Stack(
+                            children: [
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onPanStart: (details) => _handlePanStart(details, coords, track, selectedKf, nextKf),
+                                onPanUpdate: (details) => _handlePanUpdate(details, coords, track, layerDuration),
+                                onPanEnd: (_) => _handlePanEnd(),
+                                onPanCancel: () => _handlePanEnd(),
+                                onTapDown: (details) => _handleTapDown(details, coords, track, layerDuration),
+                                child: CustomPaint(
+                                  painter: _MotionGraphPainter(
+                                    track: track,
+                                    durationSec: layerDuration,
+                                    playheadSec: relPlayheadSec,
+                                    selectedKeyframe: selectedKf,
+                                    nextKeyframe: nextKf,
+                                    property: _selectedProperty,
+                                    displayMode: _displayMode,
+                                    coords: coords,
+                                    dragTooltipText: _dragTooltipText,
+                                    dragTooltipPos: _dragTooltipPos,
+                                  ),
+                                  child: const SizedBox.expand(),
+                                ),
                               ),
-                              child: const SizedBox.expand(),
-                            ),
+                              Positioned(
+                                top: 8,
+                                right: 8,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xCC1A1A20),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(color: Colors.white12),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      InkWell(
+                                        onTap: () => _zoom(0.7),
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: const Padding(
+                                          padding: EdgeInsets.all(4),
+                                          child: Icon(Icons.zoom_in_rounded, size: 16, color: Colors.white70),
+                                        ),
+                                      ),
+                                      InkWell(
+                                        onTap: () => _zoom(1.4),
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: const Padding(
+                                          padding: EdgeInsets.all(4),
+                                          child: Icon(Icons.zoom_out_rounded, size: 16, color: Colors.white70),
+                                        ),
+                                      ),
+                                      if (_hasCustomView)
+                                        InkWell(
+                                          onTap: _resetViewToFit,
+                                          borderRadius: BorderRadius.circular(12),
+                                          child: const Padding(
+                                            padding: EdgeInsets.all(4),
+                                            child: Icon(Icons.fit_screen_rounded, size: 16, color: Color(0xFFFFD600)),
+                                          ),
+                                        ),
+                                      InkWell(
+                                        onTap: () => _showTimeToolsModal(context, track),
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: const Padding(
+                                          padding: EdgeInsets.all(4),
+                                          child: Icon(Icons.schedule_rounded, size: 16, color: Colors.white70),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
                           );
                         },
                       ),
@@ -363,7 +431,7 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
     );
   }
 
-  Widget _buildHeader(BuildContext context) {
+  Widget _buildHeader(BuildContext context, KeyframeTrack track) {
     return Column(
       children: [
         Container(
@@ -436,6 +504,43 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
       ],
     );
   }
+
+  void _zoom(double factor) {
+    final layerDuration = _getLayerDurationSec();
+    final currentStart = _hasCustomView ? _viewStartSec : 0.0;
+    final currentEnd = _hasCustomView ? _viewEndSec : layerDuration;
+    final center = _getLayerRelativePlayheadSec().clamp(currentStart, currentEnd);
+    final currentSpan = currentEnd - currentStart;
+    final newSpan = (currentSpan * factor).clamp(0.1, layerDuration);
+    final halfSpan = newSpan / 2.0;
+    var newStart = center - halfSpan;
+    var newEnd = center + halfSpan;
+    if (newStart < 0.0) {
+      newEnd += (0.0 - newStart);
+      newStart = 0.0;
+    }
+    if (newEnd > layerDuration) {
+      newStart = math.max(0.0, newStart - (newEnd - layerDuration));
+      newEnd = layerDuration;
+    }
+    setState(() {
+      _viewStartSec = newStart;
+      _viewEndSec = newEnd;
+      _hasCustomView = true;
+    });
+    HapticFeedback.selectionClick();
+  }
+
+  void _resetViewToFit() {
+    setState(() {
+      _viewStartSec = 0.0;
+      _viewEndSec = _getLayerDurationSec();
+      _hasCustomView = false;
+    });
+    HapticFeedback.lightImpact();
+    TtsService.announce('Reset graph view');
+  }
+
 
   Widget _buildModeButton({
     required MotionGraphDisplayMode mode,
@@ -581,39 +686,6 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
                 ),
               ),
               const Spacer(),
-              if (_selectedProperty.isTransform) ...[
-                InkWell(
-                  onTap: () {
-                    setState(() {
-                      _syncTransformTracks = !_syncTransformTracks;
-                    });
-                  },
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _syncTransformTracks ? Icons.link_rounded : Icons.link_off_rounded,
-                          size: 13,
-                          color: _syncTransformTracks ? const Color(0xFFFFD600) : Colors.white38,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          _syncTransformTracks ? 'Sync Transforms' : 'Single Track',
-                          style: TextStyle(
-                            color: _syncTransformTracks ? const Color(0xFFFFD600) : Colors.white38,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-              ],
               if (selectedKf != null)
                 Text(
                   '${(selectedKf.timestampMs / 1000.0).toStringAsFixed(2)}s: ${selectedKf.value.toStringAsFixed(2)}',
@@ -631,9 +703,107 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
             height: 34,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              itemCount: modes.length,
+              itemCount: modes.length + 2 + (_selectedProperty.isTransform ? 1 : 0),
               separatorBuilder: (_, __) => const SizedBox(width: 6),
               itemBuilder: (context, index) {
+                if (index == modes.length) {
+                  return OutlinedButton.icon(
+                    onPressed: selectedKf != null
+                        ? () {
+                            widget.viewModel.applyEasingToTrack(_selectedProperty, selectedKf.easing);
+                            HapticFeedback.lightImpact();
+                            TtsService.announce('Applied easing to entire track');
+                          }
+                        : null,
+                    icon: const Icon(Icons.copy_all_rounded, size: 14, color: Color(0xFFFFD600)),
+                    label: const Text(
+                      'Apply to Track',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFFFD600),
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E1E22),
+                      foregroundColor: const Color(0xFFFFD600),
+                      side: const BorderSide(
+                        color: Color(0xFFFFD600),
+                        width: 1,
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                      ),
+                    ),
+                  );
+                }
+
+                if (index == modes.length + 1) {
+                  return OutlinedButton.icon(
+                    onPressed: selectedKf != null
+                        ? () => _showPresetPickerModal(context, selectedKf)
+                        : null,
+                    icon: const Icon(Icons.auto_awesome_motion_rounded, size: 14, color: Color(0xFFFFD600)),
+                    label: const Text(
+                      'Presets Gallery...',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFFFD600),
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E1E22),
+                      foregroundColor: const Color(0xFFFFD600),
+                      side: const BorderSide(
+                        color: Color(0xFFFFD600),
+                        width: 1,
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                      ),
+                    ),
+                  );
+                }
+
+                if (index == modes.length + 2 && _selectedProperty.isTransform) {
+                  return OutlinedButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _syncTransformTracks = !_syncTransformTracks;
+                      });
+                      HapticFeedback.selectionClick();
+                    },
+                    icon: Icon(
+                      _syncTransformTracks ? Icons.link_rounded : Icons.link_off_rounded,
+                      size: 14,
+                      color: _syncTransformTracks ? const Color(0xFFFFD600) : Colors.white38,
+                    ),
+                    label: Text(
+                      _syncTransformTracks ? 'Sync Transforms' : 'Single Track',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: _syncTransformTracks ? const Color(0xFFFFD600) : Colors.white38,
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E1E22),
+                      foregroundColor: _syncTransformTracks ? const Color(0xFFFFD600) : Colors.white38,
+                      side: BorderSide(
+                        color: _syncTransformTracks ? const Color(0xFFFFD600) : Colors.white12,
+                        width: 1,
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                      ),
+                    ),
+                  );
+                }
+
                 final modeItem = modes[index];
                 final isSelected = selectedKf != null && currentMode == modeItem.$1;
 
@@ -856,6 +1026,7 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
     MotionKeyframe? selectedKf,
     MotionKeyframe? nextKf,
   ) {
+    widget.viewModel.beginKeyframeGesture();
     final pos = details.localPosition;
     const hitRadius = 28.0; // High-DPI physical touch radius
 
@@ -968,6 +1139,7 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
           _draggedKeyframe!.easing.y2,
           tangentMode: _draggedKeyframe!.easing.tangentMode,
           syncAllTransformProperties: _syncTransformTracks,
+          saveSnapshot: false,
         );
 
         setState(() {
@@ -998,6 +1170,7 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
           relY,
           tangentMode: _draggedKeyframe!.easing.tangentMode,
           syncAllTransformProperties: _syncTransformTracks,
+          saveSnapshot: false,
         );
 
         setState(() {
@@ -1016,6 +1189,7 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
   }
 
   void _handlePanEnd() {
+    widget.viewModel.endKeyframeGesture();
     setState(() {
       _dragType = _ActiveDragType.none;
       _draggedKeyframe = null;
@@ -1059,6 +1233,298 @@ class _MotionGraphSheetState extends State<MotionGraphSheet> {
       globalSec = vm.selectedAudioTrack!.startTimeInSeconds + relSec;
     }
     vm.seekTo(globalSec);
+  }
+
+  void _showPresetPickerModal(BuildContext context, MotionKeyframe selectedKf) {
+    bool applyToTrack = false;
+    const presets = EasingCurve.standardPresets;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF18181C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppDimensions.radiusLg)),
+      ),
+      builder: (modalCtx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return SafeArea(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.auto_awesome_motion_rounded, color: AppColors.primary, size: 18),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Easing Curve Presets Gallery',
+                          style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                          onPressed: () => Navigator.of(modalCtx).pop(),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // Scope Toggle: Selected Keyframe vs Entire Track
+                    Row(
+                      children: [
+                        Checkbox(
+                          value: applyToTrack,
+                          activeColor: AppColors.primary,
+                          onChanged: (val) {
+                            setModalState(() {
+                              applyToTrack = val ?? false;
+                            });
+                          },
+                        ),
+                        const Text(
+                          'Apply selected preset to entire track',
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                    const Divider(color: Colors.white12, height: 12),
+                    // Presets Grid
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.40,
+                      ),
+                      child: GridView.builder(
+                        shrinkWrap: true,
+                        itemCount: presets.length,
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          childAspectRatio: 2.2,
+                          crossAxisSpacing: 8,
+                          mainAxisSpacing: 8,
+                        ),
+                        itemBuilder: (context, index) {
+                          final curve = presets[index];
+                          final name = curve.label ?? curve.mode.name;
+
+                          return InkWell(
+                            onTap: () {
+                              if (applyToTrack) {
+                                widget.viewModel.applyEasingToTrack(_selectedProperty, curve);
+                              } else {
+                                widget.viewModel.updateKeyframeEasing(
+                                  _selectedProperty,
+                                  selectedKf.timestampMs,
+                                  curve,
+                                  syncAllTransformProperties: _syncTransformTracks,
+                                );
+                              }
+                              HapticFeedback.lightImpact();
+                              TtsService.announce('$name preset applied');
+                              Navigator.of(modalCtx).pop();
+                            },
+                            borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF222228),
+                                borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                                border: Border.all(color: Colors.white12),
+                              ),
+                              child: Row(
+                                children: [
+                                  SizedBox(
+                                    width: 44,
+                                    height: 32,
+                                    child: CustomPaint(
+                                      painter: _CurveThumbnailPainter(curve: curve),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Text(
+                                          name,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '(${curve.x1.toStringAsFixed(2)}, ${curve.y1.toStringAsFixed(2)})',
+                                          style: const TextStyle(color: Colors.white54, fontSize: 9),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showTimeToolsModal(BuildContext context, KeyframeTrack track) {
+    final playheadSec = _getLayerRelativePlayheadSec();
+    bool anchorAtPlayhead = false;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF18181C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppDimensions.radiusLg)),
+      ),
+      builder: (modalCtx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return SafeArea(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.schedule_rounded, color: AppColors.primary, size: 18),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Temporal Track Tools — ${_selectedProperty.label}',
+                          style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                          onPressed: () => Navigator.of(modalCtx).pop(),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Track contains ${track.length} keyframes',
+                      style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    ),
+                    const Divider(color: Colors.white12, height: 16),
+                    // 1. Shift Time
+                    const Text(
+                      'SHIFT TRACK IN TIME',
+                      style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        for (final offset in [-1.0, -0.5, -0.1, 0.1, 0.5, 1.0])
+                          OutlinedButton(
+                            onPressed: track.isEmpty
+                                ? null
+                                : () {
+                                    final ms = (offset * 1000).round();
+                                    widget.viewModel.shiftKeyframeTrack(_selectedProperty, ms);
+                                    HapticFeedback.lightImpact();
+                                    TtsService.announce('Shifted track by ${offset > 0 ? "+$offset" : offset}s');
+                                    Navigator.of(modalCtx).pop();
+                                  },
+                            style: OutlinedButton.styleFrom(
+                              backgroundColor: const Color(0xFF222228),
+                              foregroundColor: Colors.white,
+                              side: const BorderSide(color: Colors.white12),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            child: Text(
+                              '${offset > 0 ? "+$offset" : offset}s',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    // 2. Scale Time
+                    Row(
+                      children: [
+                        const Text(
+                          'SCALE TRACK DURATION / SPEED',
+                          style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8),
+                        ),
+                        const Spacer(),
+                        InkWell(
+                          onTap: () {
+                            setModalState(() {
+                              anchorAtPlayhead = !anchorAtPlayhead;
+                            });
+                          },
+                          child: Text(
+                            anchorAtPlayhead
+                                ? 'Anchor: Playhead (${playheadSec.toStringAsFixed(2)}s)'
+                                : 'Anchor: Track Start (0.0s)',
+                            style: const TextStyle(color: Color(0xFFFFD600), fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        for (final (factor, label) in [
+                          (0.5, '0.5x (Double Speed)'),
+                          (0.75, '0.75x (Faster)'),
+                          (1.25, '1.25x (Slower)'),
+                          (1.5, '1.5x (1.5x Duration)'),
+                          (2.0, '2.0x (Half Speed)'),
+                        ])
+                          OutlinedButton(
+                            onPressed: track.isEmpty
+                                ? null
+                                : () {
+                                    final anchorMs = anchorAtPlayhead ? (playheadSec * 1000).round() : 0;
+                                    widget.viewModel.scaleKeyframeTrack(_selectedProperty, factor, originMs: anchorMs);
+                                    HapticFeedback.lightImpact();
+                                    TtsService.announce('Scaled track duration by ${factor}x');
+                                    Navigator.of(modalCtx).pop();
+                                  },
+                            style: OutlinedButton.styleFrom(
+                              backgroundColor: const Color(0xFF222228),
+                              foregroundColor: Colors.white,
+                              side: const BorderSide(color: Colors.white12),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            child: Text(label, style: const TextStyle(fontSize: 11)),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 }
 
@@ -1142,8 +1608,11 @@ class _MotionGraphPainter extends CustomPainter {
     // Continuous evaluated curve (120 sampled intervals for exact easing curvature)
     final curvePath = Path();
     const sampleCount = 120;
+    final startT = coords.viewStartSec;
+    final endT = coords.viewEndSec;
+    final spanT = endT - startT;
     for (int i = 0; i <= sampleCount; i++) {
-      final t = (i / sampleCount) * durationSec;
+      final t = startT + (i / sampleCount) * spanT;
       final val = track.isEmpty ? property.defaultValue : track.evaluate(t);
       final x = coords.timeToX(t);
       final y = coords.valueToY(val);
@@ -1233,9 +1702,12 @@ class _MotionGraphPainter extends CustomPainter {
     const sampleCount = 100;
     final speeds = <double>[];
     double maxSpeed = 0.01;
+    final startT = coords.viewStartSec;
+    final endT = coords.viewEndSec;
+    final spanT = endT - startT;
 
     for (int i = 0; i <= sampleCount; i++) {
-      final t = (i / sampleCount) * durationSec;
+      final t = startT + (i / sampleCount) * spanT;
       final speed = track.evaluateDerivative(t).abs();
       speeds.add(speed);
       if (speed > maxSpeed) maxSpeed = speed;
@@ -1251,7 +1723,7 @@ class _MotionGraphPainter extends CustomPainter {
     final areaPath = Path();
 
     for (int i = 0; i <= sampleCount; i++) {
-      final t = (i / sampleCount) * durationSec;
+      final t = startT + (i / sampleCount) * spanT;
       final x = coords.timeToX(t);
       final y = speedToY(speeds[i]);
 
@@ -1392,6 +1864,50 @@ class _MotionGraphPainter extends CustomPainter {
         oldDelegate.displayMode != displayMode ||
         oldDelegate.durationSec != durationSec ||
         oldDelegate.dragTooltipText != dragTooltipText ||
-        oldDelegate.dragTooltipPos != dragTooltipPos;
+        oldDelegate.dragTooltipPos != dragTooltipPos ||
+        oldDelegate.coords.viewStartSec != coords.viewStartSec ||
+        oldDelegate.coords.viewEndSec != coords.viewEndSec;
   }
+}
+
+/// Thumbnail CustomPainter for Easing Curves
+class _CurveThumbnailPainter extends CustomPainter {
+  final EasingCurve curve;
+
+  const _CurveThumbnailPainter({required this.curve});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bgPaint = Paint()
+      ..color = const Color(0xFF1E1E24)
+      ..style = PaintingStyle.fill;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(4)),
+      bgPaint,
+    );
+
+    final linePaint = Paint()
+      ..color = const Color(0xFFFFD600)
+      ..strokeWidth = 2.0
+      ..style = PaintingStyle.stroke;
+
+    final path = Path();
+    const samples = 30;
+    for (int i = 0; i <= samples; i++) {
+      final t = i / samples;
+      final yNorm = curve.evaluate(t).clamp(-0.2, 1.2);
+      final x = t * size.width;
+      final y = size.height - (yNorm * (size.height - 8) + 4);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(path, linePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CurveThumbnailPainter oldDelegate) =>
+      oldDelegate.curve != curve;
 }

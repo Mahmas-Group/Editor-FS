@@ -125,6 +125,8 @@ class EasingCurve {
 
   /// Evaluates normalized curve progression [0.0, 1.0] given time progress [0.0, 1.0]
   double evaluate(double t) {
+    if (t.isNaN) return 0.0;
+    if (t.isInfinite) return t.isNegative ? 0.0 : 1.0;
     final clampedT = t.clamp(0.0, 1.0);
     switch (mode) {
       case InterpolationMode.hold:
@@ -146,6 +148,7 @@ class EasingCurve {
 
   /// Evaluates instantaneous rate of change dy/dt given time progress [0.0, 1.0]
   double evaluateDerivative(double t) {
+    if (t.isNaN || t.isInfinite) return 0.0;
     final clampedT = t.clamp(0.0, 1.0);
     switch (mode) {
       case InterpolationMode.hold:
@@ -916,6 +919,24 @@ class KeyframeTrackGroup {
     if (track == null) return this;
     final updatedTracks = Map<AnimatableProperty, KeyframeTrack>.from(tracks);
     updatedTracks[property] = track.applyEasingToAll(easing);
+    return KeyframeTrackGroup(tracks: updatedTracks);
+  }
+
+  /// Shifts a single property track by offsetMs
+  KeyframeTrackGroup shiftPropertyTime(AnimatableProperty property, int offsetMs, {int minTimeMs = 0}) {
+    final track = tracks[property];
+    if (track == null) return this;
+    final updatedTracks = Map<AnimatableProperty, KeyframeTrack>.from(tracks);
+    updatedTracks[property] = track.shiftTime(offsetMs, minTimeMs: minTimeMs);
+    return KeyframeTrackGroup(tracks: updatedTracks);
+  }
+
+  /// Scales a single property track relative to originMs
+  KeyframeTrackGroup scalePropertyTime(AnimatableProperty property, double factor, {int originMs = 0}) {
+    final track = tracks[property];
+    if (track == null) return this;
+    final updatedTracks = Map<AnimatableProperty, KeyframeTrack>.from(tracks);
+    updatedTracks[property] = track.scaleTime(factor, originMs: originMs);
     return KeyframeTrackGroup(tracks: updatedTracks);
   }
 
