@@ -1,7 +1,7 @@
 name: capcut_video_editor
 description: Editor FS - A sleek, modern video editing app built with Flutter.
 publish_to: 'none'
-version: 1.7.1+3101
+version: 1.8.0+3200
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -21,6 +21,8 @@ dependencies:
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
   flutter_lints: ^3.0.0
 

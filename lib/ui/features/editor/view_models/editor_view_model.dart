@@ -6102,8 +6102,11 @@ class EditorViewModel extends ChangeNotifier {
     int timeMs,
     EasingCurve easing, {
     bool syncAllTransformProperties = true,
+    bool saveSnapshot = true,
   }) {
-    _saveSnapshot();
+    if (saveSnapshot) {
+      _saveSnapshot();
+    }
     final shouldSync = syncAllTransformProperties && property.isTransform;
 
     if (_selectedClipIndex != null) {
@@ -6261,9 +6264,138 @@ class EditorViewModel extends ChangeNotifier {
           );
         }
       }
+    } else if (selectedTextOverlay != null) {
+      final text = selectedTextOverlay!;
+      final maxMs = (text.durationInSeconds * 1000).round();
+      final clampedNewMs = newTimeMs.clamp(0, maxMs);
+      final track = text.effectiveKeyframeTracks.tracks[property];
+      if (track != null) {
+        final kf = track.getKeyframeAt(oldTimeMs, toleranceMs: 80);
+        if (kf != null) {
+          var group = text.effectiveKeyframeTracks.removeKeyframeAtTime(oldTimeMs, toleranceMs: 80);
+          group = group.addKeyframe(property, clampedNewMs, kf.value, easing: kf.easing);
+          updateTextOverlay(
+            text.copyWith(
+              keyframeTracks: group,
+              keyframes: group.toVideoKeyframes(),
+            ),
+            saveSnapshot: false,
+            notify: true,
+          );
+        }
+      }
+    } else if (selectedAudioTrack != null) {
+      final audio = selectedAudioTrack!;
+      final maxMs = (audio.durationInSeconds * 1000).round();
+      final clampedNewMs = newTimeMs.clamp(0, maxMs);
+      final track = audio.effectiveKeyframeTracks.tracks[property];
+      if (track != null) {
+        final kf = track.getKeyframeAt(oldTimeMs, toleranceMs: 80);
+        if (kf != null) {
+          var group = audio.effectiveKeyframeTracks.removeKeyframeAtTime(oldTimeMs, toleranceMs: 80);
+          group = group.addKeyframe(property, clampedNewMs, kf.value, easing: kf.easing);
+          final index = _audioTracks.indexWhere((a) => a.id == audio.id);
+          if (index != -1) {
+            _audioTracks[index] = audio.copyWith(keyframeTracks: group);
+          }
+        }
+      }
     }
     scheduleAutoSave();
     notifyListeners();
+  }
+
+  /// Updates keyframe value at target timestamp directly without moving playhead
+  void updateKeyframeValueAtTime(
+    AnimatableProperty property,
+    int timeMs,
+    double newValue, {
+    int toleranceMs = 80,
+  }) {
+    if (_selectedClipIndex != null) {
+      final clip = _videoClips[_selectedClipIndex!];
+      final updatedGroup = clip.effectiveKeyframeTracks.updateKeyframeValueAt(
+        property,
+        timeMs,
+        newValue,
+        toleranceMs: toleranceMs,
+      );
+      _videoClips[_selectedClipIndex!] = clip.copyWith(
+        keyframeTracks: updatedGroup,
+        keyframes: updatedGroup.toVideoKeyframes(),
+      );
+    } else if (_selectedOverlayIndex != null && _selectedOverlayIndex! < _overlayClips.length) {
+      final overlay = _overlayClips[_selectedOverlayIndex!];
+      final updatedGroup = overlay.effectiveKeyframeTracks.updateKeyframeValueAt(
+        property,
+        timeMs,
+        newValue,
+        toleranceMs: toleranceMs,
+      );
+      _overlayClips[_selectedOverlayIndex!] = overlay.copyWith(
+        keyframeTracks: updatedGroup,
+        keyframes: updatedGroup.toVideoKeyframes(),
+      );
+    } else if (selectedTextOverlay != null) {
+      final text = selectedTextOverlay!;
+      final updatedGroup = text.effectiveKeyframeTracks.updateKeyframeValueAt(
+        property,
+        timeMs,
+        newValue,
+        toleranceMs: toleranceMs,
+      );
+      updateTextOverlay(
+        text.copyWith(
+          keyframeTracks: updatedGroup,
+          keyframes: updatedGroup.toVideoKeyframes(),
+        ),
+        saveSnapshot: false,
+        notify: true,
+      );
+    } else if (selectedAudioTrack != null) {
+      final audio = selectedAudioTrack!;
+      final updatedGroup = audio.effectiveKeyframeTracks.updateKeyframeValueAt(
+        property,
+        timeMs,
+        newValue,
+        toleranceMs: toleranceMs,
+      );
+      final index = _audioTracks.indexWhere((a) => a.id == audio.id);
+      if (index != -1) {
+        _audioTracks[index] = audio.copyWith(keyframeTracks: updatedGroup);
+      }
+    }
+    scheduleAutoSave();
+    notifyListeners();
+  }
+
+  /// Updates cubic Bézier tangent handles (x1, y1, x2, y2) at target timestamp
+  void updateKeyframeBezierHandles(
+    AnimatableProperty property,
+    int timeMs,
+    double x1,
+    double y1,
+    double x2,
+    double y2, {
+    TangentMode tangentMode = TangentMode.autoSmooth,
+    bool syncAllTransformProperties = true,
+    bool saveSnapshot = true,
+  }) {
+    final customCurve = EasingCurve.cubic(
+      x1,
+      y1,
+      x2,
+      y2,
+      label: 'Custom Bézier',
+      tangentMode: tangentMode,
+    );
+    updateKeyframeEasing(
+      property,
+      timeMs,
+      customCurve,
+      syncAllTransformProperties: syncAllTransformProperties,
+      saveSnapshot: saveSnapshot,
+    );
   }
 
   /// Sets keyframe property value at current playhead relative time for selected layer
@@ -6373,8 +6505,13 @@ class EditorViewModel extends ChangeNotifier {
     required AnimatableProperty property,
     String? keyframeId,
     required double newValue,
+    int? timeMs,
   }) {
-    setKeyframePropertyValue(property, newValue);
+    if (timeMs != null) {
+      updateKeyframeValueAtTime(property, timeMs, newValue);
+    } else {
+      setKeyframePropertyValue(property, newValue);
+    }
   }
 
   /// Changes keyframe easing curve on the selected layer
@@ -6399,6 +6536,189 @@ class EditorViewModel extends ChangeNotifier {
   }) {
     final oldMs = oldTimestampMs ?? (_playheadPosition * 1000).round();
     moveSelectedKeyframe(property, oldMs, newTimestampMs);
+  }
+
+  /// Begins a continuous keyframe manipulation gesture, recording a single undo checkpoint
+  void beginKeyframeGesture() {
+    _saveSnapshot();
+  }
+
+  /// Ends a continuous keyframe manipulation gesture and ensures persistence
+  void endKeyframeGesture() {
+    scheduleAutoSave();
+    notifyListeners();
+  }
+
+  /// Shifts keyframe track (or all tracks if property is null) by offsetMs
+  void shiftKeyframeTrack(AnimatableProperty? property, int offsetMs, {int minTimeMs = 0}) {
+    if (offsetMs == 0) return;
+    _saveSnapshot();
+    if (_selectedClipIndex != null) {
+      final clip = _videoClips[_selectedClipIndex!];
+      final currentGroup = clip.effectiveKeyframeTracks;
+      final updatedGroup = property != null
+          ? currentGroup.shiftPropertyTime(property, offsetMs, minTimeMs: minTimeMs)
+          : currentGroup.shiftTime(offsetMs, minTimeMs: minTimeMs);
+      _videoClips[_selectedClipIndex!] = clip.copyWith(
+        keyframeTracks: updatedGroup,
+        keyframes: updatedGroup.toVideoKeyframes(),
+      );
+    } else if (_selectedOverlayIndex != null && _selectedOverlayIndex! < _overlayClips.length) {
+      final overlay = _overlayClips[_selectedOverlayIndex!];
+      final currentGroup = overlay.effectiveKeyframeTracks;
+      final updatedGroup = property != null
+          ? currentGroup.shiftPropertyTime(property, offsetMs, minTimeMs: minTimeMs)
+          : currentGroup.shiftTime(offsetMs, minTimeMs: minTimeMs);
+      _overlayClips[_selectedOverlayIndex!] = overlay.copyWith(
+        keyframeTracks: updatedGroup,
+        keyframes: updatedGroup.toVideoKeyframes(),
+      );
+    } else if (selectedTextOverlay != null) {
+      final text = selectedTextOverlay!;
+      final currentGroup = text.effectiveKeyframeTracks;
+      final updatedGroup = property != null
+          ? currentGroup.shiftPropertyTime(property, offsetMs, minTimeMs: minTimeMs)
+          : currentGroup.shiftTime(offsetMs, minTimeMs: minTimeMs);
+      updateTextOverlay(
+        text.copyWith(
+          keyframeTracks: updatedGroup,
+          keyframes: updatedGroup.toVideoKeyframes(),
+        ),
+        saveSnapshot: false,
+        notify: true,
+      );
+    } else if (selectedAudioTrack != null) {
+      final audio = selectedAudioTrack!;
+      final currentGroup = audio.effectiveKeyframeTracks;
+      final updatedGroup = property != null
+          ? currentGroup.shiftPropertyTime(property, offsetMs, minTimeMs: minTimeMs)
+          : currentGroup.shiftTime(offsetMs, minTimeMs: minTimeMs);
+      final index = _audioTracks.indexWhere((a) => a.id == audio.id);
+      if (index != -1) {
+        _audioTracks[index] = audio.copyWith(keyframeTracks: updatedGroup);
+      }
+    }
+    HapticFeedback.lightImpact();
+    scheduleAutoSave();
+    notifyListeners();
+  }
+
+  /// Scales keyframe spacing relative to originMs by a positive factor
+  void scaleKeyframeTrack(AnimatableProperty? property, double factor, {int originMs = 0}) {
+    if (factor <= 0.0) return;
+    _saveSnapshot();
+    if (_selectedClipIndex != null) {
+      final clip = _videoClips[_selectedClipIndex!];
+      final currentGroup = clip.effectiveKeyframeTracks;
+      final updatedGroup = property != null
+          ? currentGroup.scalePropertyTime(property, factor, originMs: originMs)
+          : currentGroup.scaleTime(factor, originMs: originMs);
+      _videoClips[_selectedClipIndex!] = clip.copyWith(
+        keyframeTracks: updatedGroup,
+        keyframes: updatedGroup.toVideoKeyframes(),
+      );
+    } else if (_selectedOverlayIndex != null && _selectedOverlayIndex! < _overlayClips.length) {
+      final overlay = _overlayClips[_selectedOverlayIndex!];
+      final currentGroup = overlay.effectiveKeyframeTracks;
+      final updatedGroup = property != null
+          ? currentGroup.scalePropertyTime(property, factor, originMs: originMs)
+          : currentGroup.scaleTime(factor, originMs: originMs);
+      _overlayClips[_selectedOverlayIndex!] = overlay.copyWith(
+        keyframeTracks: updatedGroup,
+        keyframes: updatedGroup.toVideoKeyframes(),
+      );
+    } else if (selectedTextOverlay != null) {
+      final text = selectedTextOverlay!;
+      final currentGroup = text.effectiveKeyframeTracks;
+      final updatedGroup = property != null
+          ? currentGroup.scalePropertyTime(property, factor, originMs: originMs)
+          : currentGroup.scaleTime(factor, originMs: originMs);
+      updateTextOverlay(
+        text.copyWith(
+          keyframeTracks: updatedGroup,
+          keyframes: updatedGroup.toVideoKeyframes(),
+        ),
+        saveSnapshot: false,
+        notify: true,
+      );
+    } else if (selectedAudioTrack != null) {
+      final audio = selectedAudioTrack!;
+      final currentGroup = audio.effectiveKeyframeTracks;
+      final updatedGroup = property != null
+          ? currentGroup.scalePropertyTime(property, factor, originMs: originMs)
+          : currentGroup.scaleTime(factor, originMs: originMs);
+      final index = _audioTracks.indexWhere((a) => a.id == audio.id);
+      if (index != -1) {
+        _audioTracks[index] = audio.copyWith(keyframeTracks: updatedGroup);
+      }
+    }
+    HapticFeedback.lightImpact();
+    scheduleAutoSave();
+    notifyListeners();
+  }
+
+  /// Applies easing curve to all keyframes on the selected property track
+  void applyEasingToTrack(
+    AnimatableProperty property,
+    EasingCurve easing, {
+    bool syncAllTransformProperties = true,
+  }) {
+    _saveSnapshot();
+    final shouldSync = syncAllTransformProperties && property.isTransform;
+
+    KeyframeTrackGroup applyGroup(KeyframeTrackGroup group) {
+      if (shouldSync) {
+        var res = group;
+        for (final prop in [
+          AnimatableProperty.scale,
+          AnimatableProperty.positionX,
+          AnimatableProperty.positionY,
+          AnimatableProperty.rotation,
+        ]) {
+          res = res.applyEasingToProperty(prop, easing);
+        }
+        return res;
+      } else {
+        return group.applyEasingToProperty(property, easing);
+      }
+    }
+
+    if (_selectedClipIndex != null) {
+      final clip = _videoClips[_selectedClipIndex!];
+      final updatedGroup = applyGroup(clip.effectiveKeyframeTracks);
+      _videoClips[_selectedClipIndex!] = clip.copyWith(
+        keyframeTracks: updatedGroup,
+        keyframes: updatedGroup.toVideoKeyframes(),
+      );
+    } else if (_selectedOverlayIndex != null && _selectedOverlayIndex! < _overlayClips.length) {
+      final overlay = _overlayClips[_selectedOverlayIndex!];
+      final updatedGroup = applyGroup(overlay.effectiveKeyframeTracks);
+      _overlayClips[_selectedOverlayIndex!] = overlay.copyWith(
+        keyframeTracks: updatedGroup,
+        keyframes: updatedGroup.toVideoKeyframes(),
+      );
+    } else if (selectedTextOverlay != null) {
+      final text = selectedTextOverlay!;
+      final updatedGroup = applyGroup(text.effectiveKeyframeTracks);
+      updateTextOverlay(
+        text.copyWith(
+          keyframeTracks: updatedGroup,
+          keyframes: updatedGroup.toVideoKeyframes(),
+        ),
+        saveSnapshot: false,
+        notify: true,
+      );
+    } else if (selectedAudioTrack != null) {
+      final audio = selectedAudioTrack!;
+      final updatedGroup = applyGroup(audio.effectiveKeyframeTracks);
+      final index = _audioTracks.indexWhere((a) => a.id == audio.id);
+      if (index != -1) {
+        _audioTracks[index] = audio.copyWith(keyframeTracks: updatedGroup);
+      }
+    }
+    HapticFeedback.lightImpact();
+    scheduleAutoSave();
+    notifyListeners();
   }
 
   VideoKeyframe? getInterpolatedKeyframe(VideoClip clip, double currentClipTime) {
@@ -6908,7 +7228,6 @@ class EditorViewModel extends ChangeNotifier {
     _videoClips[_selectedClipIndex!] = clip.copyWith(blendMode: blendMode);
     notifyListeners();
   }
-
 }
 
 /// Immutable state describing a currently executing transition between two adjacent clips
