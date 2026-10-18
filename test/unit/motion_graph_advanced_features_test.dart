@@ -122,6 +122,7 @@ void main() {
         viewModel.undo();
         undosBeforeGesture++;
       }
+      expect(undosBeforeGesture, greaterThan(0));
       // Re-add keyframe
       viewModel.seekTo(1.0);
       viewModel.addKeyframeAtPlayhead();
