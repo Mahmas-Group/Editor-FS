@@ -474,6 +474,9 @@ class VideoPlaybackService {
 
     try {
       await _channel.invokeMethod('dispose', {'textureId': textureId});
+    } catch (e) {
+      debugPrint('[VideoPlaybackService] dispose failed: $e');
+    } finally {
       final session = _sessions.remove(textureId);
       if (session != null) {
         session.isDisposed = true;
@@ -482,8 +485,6 @@ class VideoPlaybackService {
         _activeSession = null;
       }
       debugPrint('[VideoPlaybackService] Disposed session textureId: $textureId');
-    } catch (e) {
-      debugPrint('[VideoPlaybackService] dispose failed: $e');
     }
   }
 

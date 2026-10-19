@@ -203,12 +203,13 @@ class AudioPlaybackService {
 
     try {
       await _channel.invokeMethod('dispose');
+    } catch (e) {
+      debugPrint('[AudioPlaybackService] dispose failed: $e');
+    } finally {
       _isInitialized = false;
       _isPlaying = false;
       _loadedPath = null;
       debugPrint('[AudioPlaybackService] Disposed audio session');
-    } catch (e) {
-      debugPrint('[AudioPlaybackService] dispose failed: $e');
     }
   }
 }
